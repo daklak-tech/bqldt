@@ -2,7 +2,8 @@ name: Cập nhật dashboard di tích hằng ngày
 
 on:
   schedule:
-    - cron: "0 11 * * *"
+    # 10:00 hằng ngày theo giờ Việt Nam (UTC+7) = 03:00 UTC.
+    - cron: "0 3 * * *"
   workflow_dispatch:
 
 permissions:
@@ -23,7 +24,7 @@ jobs:
       - name: Cài thư viện đọc Excel
         run: python -m pip install --upgrade openpyxl
 
-      - name: Cập nhật dashboard từ Google Sheet
+      - name: Cập nhật dashboard từ Google Drive
         run: python update_dashboard_from_sheet.py --index index.html
 
       - name: Commit nếu có số liệu mới
