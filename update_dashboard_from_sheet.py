@@ -81,20 +81,49 @@ def monument_from_sheet(title: str) -> tuple[str, str, str] | None:
 
 
 def read_month_rows(ws) -> list[dict[str, Any]]:
+    revenue_cols: list[int] = []
+    visitor_cols: list[int] = []
+    for header in ws.iter_rows(min_row=1, max_row=min(ws.max_row, 8), values_only=True):
+        normalized = [norm(cell) for cell in header]
+        if not any("doanh thu" in cell or "luot khach" in cell for cell in normalized):
+            continue
+        for idx, text in enumerate(normalized):
+            if "doanh thu" in text:
+                revenue_cols.append(idx)
+            if "luot khach" in text:
+                visitor_cols.append(idx)
+        if revenue_cols or visitor_cols:
+            break
+
+    revenue25_col = revenue_cols[0] if len(revenue_cols) >= 1 else 1
+    revenue26_col = revenue_cols[1] if len(revenue_cols) >= 2 else 3
+    visitors25_col = visitor_cols[0] if len(visitor_cols) >= 1 else 2
+    visitors26_col = visitor_cols[1] if len(visitor_cols) >= 2 else 4
+
+    def get(row: tuple[Any, ...], col: int | None) -> int | None:
+        if col is None or col >= len(row):
+            return None
+        return num(row[col])
+
     rows: list[dict[str, Any]] = []
     for row in ws.iter_rows(values_only=True):
-        label = row[0] if row else None
-        m = MONTH_RE.search(str(label or ""))
+        label = None
+        m = None
+        for cell in row:
+            m = MONTH_RE.search(str(cell or ""))
+            if m:
+                label = cell
+                break
         if not m:
             continue
         rows.append(
             {
                 "month_index": int(m.group(1)) - 1,
                 "label": str(label).strip(),
-                "revenue25": num(row[1] if len(row) > 1 else None),
-                "visitors25": num(row[2] if len(row) > 2 else None),
-                "revenue26": num(row[3] if len(row) > 3 else None),
-                "visitors26": num(row[4] if len(row) > 4 else None),
+                "revenue25": get(row, revenue25_col),
+                "visitors25": get(row, visitors25_col),
+                "revenue26": get(row, revenue26_col),
+                "visitors26": get(row, visitors26_col),
             }
         )
     return rows
@@ -110,11 +139,18 @@ def partial_key(label: str) -> tuple[int, int, int] | None:
     return (year, month, day)
 
 
+def clean_month_label(label: str) -> str:
+    text = re.sub(r"\s+", " ", label).strip()
+    text = re.sub(r"\(\s*(\d{1,2})\s*/\s*(\d{1,2})(?:\s*/\s*(\d{2,4}))?\s*\)", lambda m: f"({m.group(1)}/{m.group(2)}{('/' + m.group(3)) if m.group(3) else ''})", text)
+    return re.sub(r"(Th[aá]ng\s*\d{1,2})\s*\(", r"\1 (", text, flags=re.I)
+
+
 def refresh_data(data: dict[str, Any], xlsx_path: Path) -> dict[str, Any]:
     wb = load_workbook(xlsx_path, data_only=True)
     monthly = data["monthly"]
     partial_labels: dict[int, str] = {}
     updated_any_sheet = False
+    seen_monuments: set[str] = set()
 
     for ws in wb.worksheets:
         mapping = monument_from_sheet(ws.title)
@@ -122,6 +158,15 @@ def refresh_data(data: dict[str, Any], xlsx_path: Path) -> dict[str, Any]:
             continue
         monument, field25, field26 = mapping
         rows = read_month_rows(ws)
+        if monument in seen_monuments:
+            sheet_revenue25 = sum(item["revenue25"] or 0 for item in rows)
+            sheet_revenue26 = sum(item["revenue26"] or 0 for item in rows)
+            if sheet_revenue25 == 0 and sheet_revenue26 > 0:
+                monument, field25, field26 = ("THÁP NHẠN", "", "tn26")
+            else:
+                print(f"Bỏ qua sheet trùng '{ws.title}' vì đã cập nhật {monument}.")
+                continue
+
         v25 = [None] * 12
         v26 = [None] * 12
         revenue_total_26 = 0
@@ -149,13 +194,14 @@ def refresh_data(data: dict[str, Any], xlsx_path: Path) -> dict[str, Any]:
             if key and (item["revenue26"] is not None or item["visitors26"] is not None):
                 old = partial_labels.get(i)
                 if old is None or (partial_key(old) or (0, 0, 0)) < key:
-                    partial_labels[i] = item["label"]
+                    partial_labels[i] = clean_month_label(item["label"])
 
         if not has_revenue_data:
             print(f"Bỏ qua sheet '{ws.title}' vì không đọc được dữ liệu doanh thu hợp lệ; giữ nguyên số liệu cũ.")
             continue
 
         updated_any_sheet = True
+        seen_monuments.add(monument)
         if monument in data.get("analytics", {}):
             data["analytics"][monument]["revenue"] = revenue_total_26
             if visitor_total_26:
