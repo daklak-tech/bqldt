@@ -142,13 +142,65 @@ def partial_key(label: str) -> tuple[int, int, int] | None:
 def clean_month_label(label: str) -> str:
     text = re.sub(r"\s+", " ", label).strip()
     text = re.sub(r"\(\s*(\d{1,2})\s*/\s*(\d{1,2})(?:\s*/\s*(\d{2,4}))?\s*\)", lambda m: f"({m.group(1)}/{m.group(2)}{('/' + m.group(3)) if m.group(3) else ''})", text)
-    return re.sub(r"(Th[aá]ng\s*\d{1,2})\s*\(", r"\1 (", text, flags=re.I)
+    text = re.sub(r"^th[aá]ng", "Tháng", text, flags=re.I)
+    return re.sub(r"(Tháng\s*\d{1,2})\s*\(", r"\1 (", text, flags=re.I)
+
+
+def vnd(value: int) -> str:
+    return f"{value:,}".replace(",", ".")
+
+
+def date_from_partial_label(label: str | None) -> str | None:
+    if not label:
+        return None
+    key = partial_key(label)
+    if not key:
+        return None
+    year, month, day = key
+    return f"{day}/{month}/{year}"
+
+
+def refresh_monument_result(
+    data: dict[str, Any],
+    monument_name: str,
+    revenue_total_26: int,
+    visitor_total_26: int,
+    partial_label: str | None,
+) -> None:
+    date_text = date_from_partial_label(partial_label)
+    if not date_text:
+        return
+    for monument in data.get("monuments", []):
+        if monument.get("name") != monument_name:
+            continue
+        current = monument.get("result", "")
+        visitors = data.get("analytics", {}).get(monument_name, {}).get("visitors") or visitor_total_26
+        if monument_name == "GÀNH ĐÁ ĐĨA":
+            sentence = (
+                f"Theo bảng số liệu cập nhật đến ngày {date_text}, doanh thu đạt {vnd(revenue_total_26)} đồng; "
+                f"lượt khách năm 2026 ghi nhận {vnd(int(visitors))} lượt."
+            )
+            pattern = r"Theo bảng số liệu cập nhật đến ngày \d{1,2}/\d{1,2}/2026, doanh thu đạt [0-9.]+ đồng; lượt khách năm 2026 ghi nhận [0-9.]+ lượt\."
+        elif monument_name == "BÃI MÔN - MŨI ĐẠI LÃNH":
+            sentence = (
+                f"Theo bảng số liệu cập nhật đến ngày {date_text}, doanh thu đạt {vnd(revenue_total_26)} đồng; "
+                f"lượt khách năm 2026 ghi nhận {vnd(int(visitors))} lượt."
+            )
+            pattern = r"Theo bảng số liệu cập nhật đến ngày \d{1,2}/\d{1,2}/2026, doanh thu đạt [0-9.]+ đồng; lượt khách năm 2026 ghi nhận [0-9.]+ lượt\."
+        else:
+            return
+        if re.search(pattern, current):
+            monument["result"] = re.sub(pattern, sentence, current)
+        else:
+            monument["result"] = (current.rstrip() + " " + sentence).strip()
+        return
 
 
 def refresh_data(data: dict[str, Any], xlsx_path: Path) -> dict[str, Any]:
     wb = load_workbook(xlsx_path, data_only=True)
     monthly = data["monthly"]
     partial_labels: dict[int, str] = {}
+    monument_partial_labels: dict[str, tuple[tuple[int, int, int], str]] = {}
     updated_any_sheet = False
     seen_monuments: set[str] = set()
 
@@ -192,9 +244,13 @@ def refresh_data(data: dict[str, Any], xlsx_path: Path) -> dict[str, Any]:
 
             key = partial_key(item["label"])
             if key and (item["revenue26"] is not None or item["visitors26"] is not None):
+                clean_label = clean_month_label(item["label"])
                 old = partial_labels.get(i)
                 if old is None or (partial_key(old) or (0, 0, 0)) < key:
-                    partial_labels[i] = clean_month_label(item["label"])
+                    partial_labels[i] = clean_label
+                old_monument = monument_partial_labels.get(monument)
+                if old_monument is None or old_monument[0] < key:
+                    monument_partial_labels[monument] = (key, clean_label)
 
         if not has_revenue_data:
             print(f"Bỏ qua sheet '{ws.title}' vì không đọc được dữ liệu doanh thu hợp lệ; giữ nguyên số liệu cũ.")
@@ -206,6 +262,13 @@ def refresh_data(data: dict[str, Any], xlsx_path: Path) -> dict[str, Any]:
             data["analytics"][monument]["revenue"] = revenue_total_26
             if visitor_total_26:
                 data["analytics"][monument]["visitors"] = visitor_total_26
+            refresh_monument_result(
+                data,
+                monument,
+                revenue_total_26,
+                visitor_total_26,
+                monument_partial_labels.get(monument, ((0, 0, 0), None))[1],
+            )
 
         if any(x is not None for x in v25 + v26):
             data.setdefault("visitorMonthly", {})[monument] = {
