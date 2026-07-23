@@ -201,6 +201,7 @@ def refresh_data(data: dict[str, Any], xlsx_path: Path) -> dict[str, Any]:
     monthly = data["monthly"]
     partial_labels: dict[int, str] = {}
     monument_partial_labels: dict[str, tuple[tuple[int, int, int], str]] = {}
+    latest_partial_label: tuple[tuple[int, int, int], str] | None = None
     updated_any_sheet = False
     seen_monuments: set[str] = set()
 
@@ -251,6 +252,8 @@ def refresh_data(data: dict[str, Any], xlsx_path: Path) -> dict[str, Any]:
                 old_monument = monument_partial_labels.get(monument)
                 if old_monument is None or old_monument[0] < key:
                     monument_partial_labels[monument] = (key, clean_label)
+                if latest_partial_label is None or latest_partial_label[0] < key:
+                    latest_partial_label = (key, clean_label)
 
         if not has_revenue_data:
             print(f"Bỏ qua sheet '{ws.title}' vì không đọc được dữ liệu doanh thu hợp lệ; giữ nguyên số liệu cũ.")
@@ -285,9 +288,15 @@ def refresh_data(data: dict[str, Any], xlsx_path: Path) -> dict[str, Any]:
 
     if updated_any_sheet:
         for source in data.get("sources", []):
+            if source.get("name") == "Bao cao 6 thang.md":
+                source["note"] = "Kết quả thực hiện đến tháng hiện tại; kế hoạch thu 2026 sử dụng mốc 19,8 tỷ đồng đang thể hiện trên dashboard"
             if "Nguồn Drive" in source.get("note", "") or "Google Sheet" in source.get("note", ""):
                 source["name"] = "Google Sheet doanh thu, lượt khách 2025–2026"
-                source["note"] = "Cập nhật tự động hằng ngày; bao gồm cả số liệu tháng đang phát sinh theo file nguồn."
+                date_text = date_from_partial_label(latest_partial_label[1]) if latest_partial_label else None
+                if date_text:
+                    source["note"] = f"Cập nhật tự động hằng ngày; số liệu tháng đang phát sinh cập nhật đến {date_text} theo file nguồn."
+                else:
+                    source["note"] = "Cập nhật tự động hằng ngày; bao gồm cả số liệu tháng đang phát sinh theo file nguồn."
 
     return data
 
