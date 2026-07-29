@@ -15,7 +15,8 @@ from openpyxl import load_workbook
 
 DEFAULT_SHEET_URL = "https://docs.google.com/spreadsheets/d/1vpDSRjzNjJL3gNsAOdIxFh0Aad16yoD4/edit?gid=631738297#gid=631738297"
 MONTH_RE = re.compile(r"th[aá]ng\s*(\d{1,2})", re.I)
-PARTIAL_RE = re.compile(r"\((\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\)")
+PARTIAL_RE = re.compile(r"\(\s*(\d{1,2})\s*/\s*(\d{1,2})(?:\s*/\s*(\d{2,4}))?\s*\)")
+COMPACT_PARTIAL_RE = re.compile(r"\(\s*(\d{3,4})\s*\)")
 
 
 def norm(value: Any) -> str:
@@ -131,16 +132,46 @@ def read_month_rows(ws) -> list[dict[str, Any]]:
 
 def partial_key(label: str) -> tuple[int, int, int] | None:
     m = PARTIAL_RE.search(label)
-    if not m:
+    if m:
+        day, month, year = int(m.group(1)), int(m.group(2)), int(m.group(3) or 2026)
+        if year < 100:
+            year += 2000
+        return (year, month, day)
+
+    compact = COMPACT_PARTIAL_RE.search(label)
+    month_match = MONTH_RE.search(label)
+    if not compact or not month_match:
         return None
-    day, month, year = int(m.group(1)), int(m.group(2)), int(m.group(3) or 2026)
-    if year < 100:
-        year += 2000
+
+    digits = compact.group(1)
+    month = int(month_match.group(1))
+    day: int | None = None
+
+    # Một số ô nguồn gõ nhanh dạng "Thang 7(287)" thay vì "Tháng 7 (28/7)".
+    # Ưu tiên tháng đã ghi ngoài nhãn, rồi suy ra phần còn lại là ngày.
+    month_text = str(month)
+    if digits.endswith(month_text):
+        possible_day = digits[: -len(month_text)]
+        if possible_day.isdigit():
+            day = int(possible_day)
+    if day is None and len(digits) == 4 and len(month_text) == 1 and digits.endswith(month_text * 2):
+        possible_day = digits[:-2]
+        if possible_day.isdigit():
+            day = int(possible_day)
+
+    if day is None or not (1 <= day <= 31 and 1 <= month <= 12):
+        return None
+    year = 2026
     return (year, month, day)
 
 
 def clean_month_label(label: str) -> str:
     text = re.sub(r"\s+", " ", label).strip()
+    key = partial_key(text)
+    month_match = MONTH_RE.search(text)
+    if key and month_match:
+        _, month, day = key
+        return f"Tháng {int(month_match.group(1))} ({day}/{month})"
     text = re.sub(r"\(\s*(\d{1,2})\s*/\s*(\d{1,2})(?:\s*/\s*(\d{2,4}))?\s*\)", lambda m: f"({m.group(1)}/{m.group(2)}{('/' + m.group(3)) if m.group(3) else ''})", text)
     text = re.sub(r"^th[aá]ng", "Tháng", text, flags=re.I)
     return re.sub(r"(Tháng\s*\d{1,2})\s*\(", r"\1 (", text, flags=re.I)
@@ -287,13 +318,25 @@ def refresh_data(data: dict[str, Any], xlsx_path: Path) -> dict[str, Any]:
             row["month"] = partial_labels[i]
 
     if updated_any_sheet:
+        partial_notes = []
+        for monument, (_, label) in monument_partial_labels.items():
+            date_text = date_from_partial_label(label)
+            if date_text:
+                partial_notes.append(f"{monument.title()} đến {date_text}")
         for source in data.get("sources", []):
             if source.get("name") == "Bao cao 6 thang.md":
                 source["note"] = "Kết quả thực hiện đến tháng hiện tại; kế hoạch thu 2026 sử dụng mốc 19,8 tỷ đồng đang thể hiện trên dashboard"
-            if "Nguồn Drive" in source.get("note", "") or "Google Sheet" in source.get("note", ""):
+            source_name_note = f"{source.get('name', '')} {source.get('note', '')}"
+            if "Nguồn Drive" in source_name_note or "Google Sheet" in source_name_note:
                 source["name"] = "Google Sheet doanh thu, lượt khách 2025–2026"
                 date_text = date_from_partial_label(latest_partial_label[1]) if latest_partial_label else None
-                if date_text:
+                if partial_notes:
+                    source["note"] = (
+                        "Cập nhật tự động hằng ngày; số liệu tháng đang phát sinh: "
+                        + ", ".join(partial_notes)
+                        + "; Tháp Nhạn chưa có phát sinh doanh thu tháng 7 theo file nguồn."
+                    )
+                elif date_text:
                     source["note"] = f"Cập nhật tự động hằng ngày; số liệu tháng đang phát sinh cập nhật đến {date_text} theo file nguồn."
                 else:
                     source["note"] = "Cập nhật tự động hằng ngày; bao gồm cả số liệu tháng đang phát sinh theo file nguồn."
