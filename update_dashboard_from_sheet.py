@@ -7,6 +7,7 @@ import re
 import sys
 import tempfile
 import urllib.request
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -227,10 +228,21 @@ def refresh_monument_result(
         return
 
 
-def refresh_data(data: dict[str, Any], xlsx_path: Path) -> dict[str, Any]:
+def format_month_list(months: list[int]) -> str:
+    names = [f"tháng {month}" for month in months]
+    if not names:
+        return ""
+    if len(names) == 1:
+        return names[0]
+    return ", ".join(names[:-1]) + " và " + names[-1]
+
+
+def refresh_data(data: dict[str, Any], xlsx_path: Path, today: date | None = None) -> dict[str, Any]:
+    today = today or date.today()
     wb = load_workbook(xlsx_path, data_only=True)
     monthly = data["monthly"]
     partial_labels: dict[int, str] = {}
+    closed_months: set[int] = set()
     monument_partial_labels: dict[str, tuple[tuple[int, int, int], str]] = {}
     latest_partial_label: tuple[tuple[int, int, int], str] | None = None
     updated_any_sheet = False
@@ -274,8 +286,14 @@ def refresh_data(data: dict[str, Any], xlsx_path: Path) -> dict[str, Any]:
             v25[i] = item["visitors25"]
             v26[i] = item["visitors26"]
 
+            has_current_data = item["revenue26"] is not None or item["visitors26"] is not None
             key = partial_key(item["label"])
-            if key and (item["revenue26"] is not None or item["visitors26"] is not None):
+            # Nếu đã qua tháng mới, xem tháng trước là số đã chốt, dù lần chạy cũ
+            # từng lưu nhãn tạm như "Tháng 7 (30/7)".
+            if has_current_data and i + 1 < today.month:
+                closed_months.add(i)
+                continue
+            if key and has_current_data:
                 clean_label = clean_month_label(item["label"])
                 old = partial_labels.get(i)
                 if old is None or (partial_key(old) or (0, 0, 0)) < key:
@@ -316,6 +334,8 @@ def refresh_data(data: dict[str, Any], xlsx_path: Path) -> dict[str, Any]:
     for i, row in enumerate(monthly):
         if i in partial_labels:
             row["month"] = partial_labels[i]
+        elif i in closed_months:
+            row["month"] = f"Tháng {i + 1}"
 
     if updated_any_sheet:
         partial_notes = []
@@ -323,6 +343,12 @@ def refresh_data(data: dict[str, Any], xlsx_path: Path) -> dict[str, Any]:
             date_text = date_from_partial_label(label)
             if date_text:
                 partial_notes.append(f"{monument.title()} đến {date_text}")
+        latest_closed_month = max((i + 1 for i in closed_months if i + 1 < today.month), default=None)
+        thap_missing_months = []
+        for month in {latest_closed_month, today.month}:
+            if month and 1 <= month <= len(monthly) and monthly[month - 1].get("tn26") is None:
+                thap_missing_months.append(month)
+        thap_missing_months = sorted(set(thap_missing_months))
         for source in data.get("sources", []):
             if source.get("name") == "Bao cao 6 thang.md":
                 source["note"] = "Kết quả thực hiện đến tháng hiện tại; kế hoạch thu 2026 sử dụng mốc 19,8 tỷ đồng đang thể hiện trên dashboard"
@@ -330,16 +356,22 @@ def refresh_data(data: dict[str, Any], xlsx_path: Path) -> dict[str, Any]:
             if "Nguồn Drive" in source_name_note or "Google Sheet" in source_name_note:
                 source["name"] = "Google Sheet doanh thu, lượt khách 2025–2026"
                 date_text = date_from_partial_label(latest_partial_label[1]) if latest_partial_label else None
+                note_parts = ["Cập nhật tự động hằng ngày"]
                 if partial_notes:
-                    source["note"] = (
-                        "Cập nhật tự động hằng ngày; số liệu tháng đang phát sinh: "
-                        + ", ".join(partial_notes)
-                        + "; Tháp Nhạn chưa có phát sinh doanh thu tháng 7 theo file nguồn."
-                    )
+                    note_parts.append("số liệu tháng đang phát sinh: " + ", ".join(partial_notes))
                 elif date_text:
-                    source["note"] = f"Cập nhật tự động hằng ngày; số liệu tháng đang phát sinh cập nhật đến {date_text} theo file nguồn."
+                    note_parts.append(f"số liệu tháng đang phát sinh cập nhật đến {date_text} theo file nguồn")
                 else:
-                    source["note"] = "Cập nhật tự động hằng ngày; bao gồm cả số liệu tháng đang phát sinh theo file nguồn."
+                    note_parts.append("bao gồm cả số liệu tháng đang phát sinh theo file nguồn")
+                if latest_closed_month:
+                    note_parts.append(f"tháng {latest_closed_month} đã chốt theo file nguồn")
+                if thap_missing_months:
+                    note_parts.append(
+                        "Tháp Nhạn chưa có phát sinh doanh thu "
+                        + format_month_list(thap_missing_months)
+                        + " theo file nguồn"
+                    )
+                source["note"] = "; ".join(note_parts) + "."
 
     return data
 
