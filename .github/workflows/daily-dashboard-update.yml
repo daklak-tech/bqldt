@@ -1,9 +1,6 @@
-name: Cập nhật dashboard di tích hằng ngày
+name: Cập nhật dashboard di tích thủ công
 
 on:
-  schedule:
-    # 10:00 hằng ngày theo giờ Việt Nam (UTC+7) = 03:00 UTC.
-    - cron: "0 3 * * *"
   workflow_dispatch:
 
 permissions:
